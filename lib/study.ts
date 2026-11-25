@@ -111,6 +111,12 @@ export type Library = {
   attempts: Attempt[];
   profile: Profile;
 };
+export type LibraryStreams = { [K in keyof Library]: Promise<Library[K]> };
+export type ItemKind =
+  "subjects" | "materials" | "notes" | "reviewers" | "quizzes";
+export type ItemRecord = {
+  [K in ItemKind]: { kind: K; row: Library[K][number] };
+}[ItemKind];
 export type Detail = {
   content?: JSONContent;
   sections?: Section[];

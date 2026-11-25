@@ -6,7 +6,8 @@ export default function Page() {
       <Brand />
       <section className="auth-card">
         <h1>This link is unavailable</h1>
-        <p>Open the newest email in the browser where you requested it.</p>
+        <p>Confirming an account? Request a fresh confirmation email. For a password reset, open the newest reset link in the browser where you requested it.</p>
+        <Link href="/verify-email">Verify your email</Link>
         <Link href="/forgot-password">Request a password reset</Link>
         <Link href="/login">Return to sign in</Link>
       </section>

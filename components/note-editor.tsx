@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditor, EditorContent, type JSONContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { useNoteSaved } from "./workspace-library";
 import { api, message } from "./request";
 import type { Note } from "@/lib/study";
 export function NoteEditor({
@@ -11,6 +12,7 @@ export function NoteEditor({
   note: Note;
   content: JSONContent;
 }) {
+  const noteSaved = useNoteSaved();
   const [title, setTitle] = useState(note.title),
     [status, setStatus] = useState("Saved");
   const latest = useRef({ title: note.title, content }),
@@ -27,13 +29,20 @@ export function NoteEditor({
         const current = version.current;
         if (!latest.current.title.trim())
           throw new Error("Enter a title to save.");
+        const snapshot = { ...latest.current };
         const result = await api<{ revision: number }>("save-note", {
           id: note.id,
           revision: revision.current,
-          ...latest.current,
+          ...snapshot,
         });
         revision.current = result.revision;
         saved.current = current;
+        noteSaved({
+          id: note.id,
+          title: snapshot.title,
+          revision: result.revision,
+          updated_at: new Date().toISOString(),
+        });
       }
       setStatus("Saved");
     } catch (err) {

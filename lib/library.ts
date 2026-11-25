@@ -2,7 +2,6 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import {
   checkDb,
-  type Library,
   type Detail,
   type Material,
   type Subject,
@@ -15,8 +14,11 @@ import {
   type Answer,
   type Chunk,
   type Section,
-  StudyError,
+  type ItemKind,
+  type ItemRecord,
+  type LibraryStreams,
 } from "./study";
+import { notFound } from "next/navigation";
 import type { JSONContent } from "@tiptap/react";
 export type DB = Awaited<ReturnType<typeof createClient>>;
 export async function allRows<T>(
@@ -36,135 +38,138 @@ export async function allRows<T>(
     if (!data || data.length < 500) return out;
   }
 }
-export async function loadLibrary(
+const columns = {
+  subjects:
+    "id,name,code,description,color,icon,deleting,created_at,updated_at",
+  materials:
+    "id,subject_id,filename,mime_type,size_bytes,status,processing_error,created_at,updated_at",
+  notes: "id,subject_id,title,revision,created_at,updated_at",
+  reviewers: "id,subject_id,title,format,saved,coverage,created_at,updated_at",
+  quizzes:
+    "id,subject_id,title,difficulty,question_types,coverage,created_at,updated_at",
+  quiz_attempts: "id,subject_id,quiz_id,score,total,created_at",
+};
+
+export function streamLibrary(
   db: DB,
-  user: { id: string; email?: string; created_at: string },
-): Promise<Library> {
-  function list<T>(table: string, select: string, order = "updated_at") {
+  user: { id: string; email?: string },
+): LibraryStreams {
+  function list<T>(table: keyof typeof columns, order = "updated_at") {
     return allRows<T>((a, b) =>
       db
         .from(table)
-        .select(select)
+        .select(columns[table])
         .eq("user_id", user.id)
         .order(order, { ascending: false })
         .order("id")
         .range(a, b),
     );
   }
-  const [subjects, materials, notes, reviewers, quizzes, attempts, profile] =
-    await Promise.all([
-      list<Subject>(
-        "subjects",
-        "id,name,code,description,color,icon,deleting,created_at,updated_at",
-      ),
-      list<Material>(
-        "materials",
-        "id,subject_id,filename,mime_type,size_bytes,status,processing_error,created_at,updated_at",
-      ),
-      list<Note>("notes", "id,subject_id,title,revision,created_at,updated_at"),
-      list<Reviewer>(
-        "reviewers",
-        "id,subject_id,title,format,saved,coverage,created_at,updated_at",
-      ),
-      list<Quiz>(
-        "quizzes",
-        "id,subject_id,title,difficulty,question_types,coverage,created_at,updated_at",
-      ),
-      list<Attempt>(
-        "quiz_attempts",
-        "id,subject_id,quiz_id,score,total,created_at",
-        "created_at",
-      ),
-      db
-        .from("profiles")
-        .select("id,full_name,created_at,avatar_url")
-        .eq("id", user.id)
-        .single(),
-    ]);
-  checkDb(profile.error);
+  async function profile(): Promise<Profile> {
+    const { data, error } = await db
+      .from("profiles")
+      .select("id,full_name,created_at,avatar_url")
+      .eq("id", user.id)
+      .single();
+    checkDb(error);
+    return { ...data!, email: user.email ?? "" } as Profile;
+  }
   return {
-    subjects,
-    materials,
-    notes,
-    reviewers,
-    quizzes,
-    attempts,
-    profile: { ...profile.data, email: user.email ?? "" } as Profile,
+    subjects: list<Subject>("subjects"),
+    materials: list<Material>("materials"),
+    notes: list<Note>("notes"),
+    reviewers: list<Reviewer>("reviewers"),
+    quizzes: list<Quiz>("quizzes"),
+    attempts: list<Attempt>("quiz_attempts", "created_at"),
+    profile: profile(),
   };
 }
-export async function detailFor(
+
+export async function loadItem(
   db: DB,
   owner: string,
-  kind: string,
+  kind: ItemKind,
   id: string,
   attempt?: string,
-): Promise<Detail> {
-  if (kind === "notes") {
-    const { data, error } = await db
-      .from("notes")
-      .select("content")
-      .eq("user_id", owner)
-      .eq("id", id)
-      .single();
-    checkDb(error);
-    return { content: data!.content as JSONContent };
-  }
-  if (kind === "reviewers") {
-    const { data, error } = await db
-      .from("reviewers")
-      .select("content")
-      .eq("user_id", owner)
-      .eq("id", id)
-      .single();
-    checkDb(error);
-    const items = await db
-      .from("reviewer_sources")
-      .select("material_id,note_id")
-      .eq("reviewer_id", id)
-      .eq("user_id", owner);
-    checkDb(items.error);
-    return {
-      sections: data!.content as Section[],
-      materialIds: items.data!.flatMap((v) =>
-        v.material_id ? [v.material_id] : [],
-      ),
-      noteIds: items.data!.flatMap((v) => (v.note_id ? [v.note_id] : [])),
-    };
-  }
-  if (kind === "materials")
-    return {
-      chunks: await allRows<Chunk>((a, b) =>
-        db
-          .from("material_chunks")
-          .select("reference,body,position")
+) {
+  // Fetch content and its revision together so an editor never saves against stale metadata.
+  const select =
+    columns[kind] +
+    (kind === "notes" || kind === "reviewers" ? ",content" : "");
+  const itemQuery = db
+    .from(kind)
+    .select(select)
+    .eq("user_id", owner)
+    .eq("id", id)
+    .maybeSingle();
+  const [item, sources, questions, answers, score] = await Promise.all([
+    itemQuery,
+    kind === "reviewers"
+      ? db
+          .from("reviewer_sources")
+          .select("material_id,note_id")
           .eq("user_id", owner)
-          .eq("material_id", id)
+          .eq("reviewer_id", id)
+      : null,
+    kind === "quizzes"
+      ? db
+          .from("quiz_questions")
+          .select("id,question,kind,options,reference,position")
+          .eq("user_id", owner)
+          .eq("quiz_id", id)
           .order("position")
-          .range(a, b),
-      ),
-    };
-  if (kind === "quizzes") {
-    const { data, error } = await db
-      .from("quiz_questions")
-      .select("id,question,kind,options,reference,position")
-      .eq("user_id", owner)
-      .eq("quiz_id", id)
-      .order("position");
-    checkDb(error);
-    const result: Detail = { questions: data as Question[] };
-    if (attempt) {
-      const answers = await db
-        .from("quiz_attempt_answers")
-        .select("question_id,chosen,correct,explanation")
-        .eq("user_id", owner)
-        .eq("quiz_id", id)
-        .eq("attempt_id", attempt);
-      checkDb(answers.error);
-      if (!answers.data?.length)
-        throw new StudyError("Attempt unavailable.", 404);
-      result.answers = answers.data as Answer[];
-    }
-    return result;
+      : null,
+    attempt
+      ? db
+          .from("quiz_attempt_answers")
+          .select("question_id,chosen,correct,explanation")
+          .eq("user_id", owner)
+          .eq("quiz_id", id)
+          .eq("attempt_id", attempt)
+      : null,
+    attempt
+      ? db
+          .from("quiz_attempts")
+          .select(columns.quiz_attempts)
+          .eq("user_id", owner)
+          .eq("quiz_id", id)
+          .eq("id", attempt)
+          .maybeSingle()
+      : null,
+  ]);
+  for (const result of [item, sources, questions, answers, score])
+    if (result) checkDb(result.error);
+  if (!item.data || (attempt && (!score?.data || !answers?.data?.length)))
+    notFound();
+
+  const { content, ...metadata } = item.data as unknown as Record<
+    string,
+    unknown
+  >;
+  const record = { kind, row: metadata } as ItemRecord;
+  const detail: Detail = {};
+  if (kind === "notes") detail.content = content as JSONContent;
+  if (kind === "reviewers") {
+    detail.sections = content as Section[];
+    detail.materialIds = sources!.data!.flatMap((row) =>
+      row.material_id ? [row.material_id] : [],
+    );
+    detail.noteIds = sources!.data!.flatMap((row) =>
+      row.note_id ? [row.note_id] : [],
+    );
   }
-  return {};
+  if (kind === "materials" && metadata.mime_type !== "application/pdf") {
+    detail.chunks = await allRows<Chunk>((a, b) =>
+      db
+        .from("material_chunks")
+        .select("reference,body,position")
+        .eq("user_id", owner)
+        .eq("material_id", id)
+        .order("position")
+        .range(a, b),
+    );
+  }
+  if (questions) detail.questions = questions.data as Question[];
+  if (answers) detail.answers = answers.data as Answer[];
+  return { record, detail, attemptRow: score?.data as Attempt | undefined };
 }

@@ -1,5 +1,5 @@
 "use client";
-import Link from "next/link";
+import Link from "./workspace-link";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {

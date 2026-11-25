@@ -23,11 +23,13 @@ The migrations under `supabase/migrations` create profiles, subjects, materials 
 
 For a **new project**, authenticate the Supabase CLI, run `supabase link --project-ref YOUR_PROJECT_REF`, inspect `supabase migration list --linked`, then apply the pending migration with `supabase db push --linked`. The current StudySync hosted project already has both migrations. Keep the private schema outside the exposed Data API schemas.
 
-Enable email/password Auth. Configure **Authentication → URL Configuration** with the app origin as the Site URL and allow its `/auth/callback` route, including the recovery query variant. For local development these are `http://localhost:3000/auth/callback` and `http://localhost:3000/auth/callback?flow=recovery`. Configure the equivalent HTTPS origin and callbacks on deployment. With the default confirmation and recovery templates, open links in the same browser that started the request so the PKCE verifier is available. Custom templates may send `token_hash` and the appropriate `type` to the callback. Configure an SMTP provider for delivery to students.
+Enable email/password Auth and email confirmations. Use `supabase/templates/confirmation.html` as the **Confirm signup** email template with the subject “Your StudySync verification code”. The template uses Supabase’s `{{ .Token }}`. Students enter the code at `/verify-email`. Configure a production SMTP sender for delivery to students.
+
+Set the Supabase Auth Site URL to the production origin and allow its `/auth/callback` and `/auth/callback?flow=recovery` URLs. Keep the equivalent localhost callbacks in the redirect allowlist for development. Open password reset links in the browser that requested them so the PKCE verifier is available.
 
 ## Student workflow
 
-1. Register, confirm your email when prompted, and sign in.
+1. Register with your email and password, then enter the emailed code to open your workspace. You can add a display name later in Settings.
 2. Create a subject and upload PDFs, DOCX files, or PPTX slides. Open a material to preview it or download the private original.
 3. Create a note in the subject. The editor saves after a short pause and reports conflicts if another tab changed the same note.
 4. Choose **Generate reviewer**, select sources and a format, then save the draft. Saved reviewers can be reopened, copied, renamed, regenerated as a new draft, or deleted.

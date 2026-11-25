@@ -1,6 +1,6 @@
 "use client";
-import Link from "next/link";
-import { useState } from "react";
+import Link from "./workspace-link";
+import { useMemo, useState } from "react";
 import {
   BookOpen,
   FlaskConical,
@@ -74,6 +74,18 @@ export function SubjectCards({
   subjects: Subject[];
   library: Library;
 }) {
+  const counts = useMemo(() => {
+    const countsFor = (rows: { subject_id: string }[]) => {
+      const result = new Map<string, number>();
+      for (const row of rows)
+        result.set(row.subject_id, (result.get(row.subject_id) ?? 0) + 1);
+      return result;
+    };
+    return {
+      materials: countsFor(library.materials),
+      notes: countsFor(library.notes),
+    };
+  }, [library.materials, library.notes]);
   return (
     <div className="cards">
       {subjects.map((s) => (
@@ -90,9 +102,8 @@ export function SubjectCards({
           <h3>{s.name}</h3>
           {s.description && <p>{s.description}</p>}
           <footer>
-            {library.materials.filter((x) => x.subject_id === s.id).length}{" "}
-            materials ·{" "}
-            {library.notes.filter((x) => x.subject_id === s.id).length} notes
+            {counts.materials.get(s.id) ?? 0} materials ·{" "}
+            {counts.notes.get(s.id) ?? 0} notes
             <br />
             Updated {formatDate(s.updated_at)}
           </footer>
@@ -109,6 +120,7 @@ export function entries(library: Library, kind: Category, subject?: string) {
       date: s.updated_at,
       description: s.code + " " + s.description,
     }));
+  const subjects = new Map(library.subjects.map((row) => [row.id, row.name]));
   return library[kind]
     .filter((row) => !subject || row.subject_id === subject)
     .map((row) => ({
@@ -116,7 +128,7 @@ export function entries(library: Library, kind: Category, subject?: string) {
       title: "filename" in row ? row.filename : row.title,
       date: row.updated_at,
       description: [
-        library.subjects.find((s) => s.id === row.subject_id)?.name,
+        subjects.get(row.subject_id),
         "status" in row
           ? row.status
           : "format" in row
@@ -141,7 +153,15 @@ export function Collection({
   const [query, setQuery] = useState(""),
     [sort, setSort] = useState("recent");
   const Icon = icons[kind];
-  const rows = entries(library, kind, subject)
+  const subjectById = useMemo(
+    () => new Map(library.subjects.map((s) => [s.id, s])),
+    [library.subjects],
+  );
+  const index = useMemo(
+    () => entries(library, kind, subject),
+    [library, kind, subject],
+  );
+  const rows = index
     .filter((r) =>
       (r.title + " " + r.description)
         .toLowerCase()
@@ -190,9 +210,7 @@ export function Collection({
         </Empty>
       ) : kind === "subjects" ? (
         <SubjectCards
-          subjects={rows.map((r) =>
-            library.subjects.find((s) => s.id === r.id)!,
-          )}
+          subjects={rows.map((r) => subjectById.get(r.id)!)}
           library={library}
         />
       ) : (
@@ -233,12 +251,13 @@ export function Activity({
       href: "/dashboard/" + kind + "/" + r.id,
     })),
   );
+  const quizzes = new Map(library.quizzes.map((quiz) => [quiz.id, quiz.title]));
   const attempts = library.attempts
     .filter((a) => !subject || a.subject_id === subject)
     .map((a) => ({
       id: a.id,
       kind: "quizzes" as const,
-      title: library.quizzes.find((q) => q.id === a.quiz_id)?.title ?? "Quiz",
+      title: quizzes.get(a.quiz_id) ?? "Quiz",
       description: "Quiz completed · " + a.score + "/" + a.total,
       date: a.created_at,
       href: "/dashboard/quizzes/" + a.quiz_id + "/results/" + a.id,

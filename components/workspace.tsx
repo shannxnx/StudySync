@@ -1,8 +1,8 @@
 "use client";
-import Link from "next/link";
+import Link from "./workspace-link";
 import "./study-tools.css";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   BookOpen,
   FileText,
@@ -33,14 +33,22 @@ import { AccountSettings } from "./account-settings";
 import dynamic from "next/dynamic";
 const NoteEditor = dynamic(
   () => import("./note-editor").then((m) => m.NoteEditor),
-  { ssr: false, loading: () => <p>Opening note…</p> },
+  { ssr: false, loading: () => <WorkspaceSkeleton area="notes" detail /> },
 );
 const PdfViewer = dynamic(
   () => import("./pdf-viewer").then((m) => m.PdfViewer),
-  { ssr: false, loading: () => <p>Opening PDF…</p> },
+  { ssr: false, loading: () => <WorkspaceSkeleton area="materials" detail /> },
 );
 import { QuizView } from "./quiz";
-import type { Library, Detail } from "@/lib/study";
+import type {
+  Attempt,
+  Library,
+  Detail,
+  ItemKind,
+  ItemRecord,
+} from "@/lib/study";
+import { useLibrary } from "./workspace-library";
+import { WorkspaceSkeleton } from "./workspace-skeleton";
 const primary: Record<Category, [DialogSpec["type"], string]> = {
   subjects: ["subject", "New subject"],
   materials: ["upload", "Upload materials"],
@@ -48,31 +56,165 @@ const primary: Record<Category, [DialogSpec["type"], string]> = {
   reviewers: ["reviewer", "Generate reviewer"],
   quizzes: ["quiz", "Create quiz"],
 };
+type Area = keyof typeof names;
 type Props = {
-  library: Library;
-  area: string;
+  area: Area;
   id?: string;
   attempt?: string;
-  detail: Detail;
-  tab: string;
+  attemptRow?: Attempt;
+  detail?: Detail;
+  record?: ItemRecord;
 };
+
+export function DetailPreview({ area, id }: { area: ItemKind; id: string }) {
+  const library = useLibrary([area]);
+  const row = library[area].find((item) => item.id === id);
+  const title =
+    row &&
+    ("name" in row ? row.name : "filename" in row ? row.filename : row.title);
+  return <WorkspaceSkeleton area={area} detail title={title} />;
+}
+
+function FormWithLibrary({
+  dialog,
+  close,
+}: {
+  dialog: DialogSpec;
+  close: () => void;
+}) {
+  return <WorkspaceForm spec={dialog} library={useLibrary()} onClose={close} />;
+}
+
+function SubjectContent({
+  id,
+  quick,
+  create,
+}: {
+  id: string;
+  quick: (subjectId: string) => React.ReactNode;
+  create: (kind: Category, subjectId: string) => React.ReactNode;
+}) {
+  const query = useSearchParams();
+  const tab = query.get("tab") ?? "overview";
+  const collection = ["materials", "notes", "reviewers", "quizzes"].includes(
+    tab,
+  )
+    ? (tab as ItemKind)
+    : undefined;
+  return (
+    <>
+      <nav className="tabs" aria-label="Subject sections">
+        {["overview", "materials", "notes", "reviewers", "quizzes"].map(
+          (name) => {
+            const href = "/dashboard/subjects/" + id + "?tab=" + name;
+            return (
+              <a
+                key={name}
+                href={href}
+                aria-current={
+                  (collection ?? "overview") === name ? "page" : undefined
+                }
+                onClick={(event) => {
+                  if (
+                    event.button ||
+                    event.ctrlKey ||
+                    event.metaKey ||
+                    event.shiftKey ||
+                    event.altKey
+                  )
+                    return;
+                  event.preventDefault();
+                  if (tab !== name) window.history.pushState(null, "", href);
+                }}
+              >
+                {name}
+              </a>
+            );
+          },
+        )}
+      </nav>
+      <Suspense
+        fallback={<WorkspaceSkeleton area={collection ?? "dashboard"} />}
+      >
+        {collection ? (
+          <>
+            {create(collection, id)}
+            <SubjectCollection key={collection} kind={collection} id={id} />
+          </>
+        ) : (
+          <>
+            {quick(id)}
+            <WorkspaceActivity subject={id} />
+          </>
+        )}
+      </Suspense>
+    </>
+  );
+}
+
+function SubjectCollection({ kind, id }: { kind: ItemKind; id: string }) {
+  return (
+    <Collection
+      kind={kind}
+      subject={id}
+      library={useLibrary(["subjects", kind])}
+    />
+  );
+}
+function WorkspaceActivity({ subject }: { subject?: string }) {
+  return <Activity library={useLibrary()} subject={subject} />;
+}
+function DashboardSubjects() {
+  const library = useLibrary(["subjects", "materials", "notes"]);
+  return (
+    <SubjectCards subjects={library.subjects.slice(0, 6)} library={library} />
+  );
+}
+function DashboardStats() {
+  const l = useLibrary(["subjects", "materials", "notes", "attempts"]);
+  return (
+    <div className="stats">
+      {(
+        [
+          [BookOpen, "Subjects", l.subjects.length, "subjects"],
+          [FileText, "Materials", l.materials.length, "materials"],
+          [NotebookPen, "Notes", l.notes.length, "notes"],
+          [ListChecks, "Quizzes taken", l.attempts.length, "quizzes"],
+        ] as const
+      ).map(([Icon, label, n, k]) => (
+        <Link href={"/dashboard/" + k} key={k}>
+          <Icon size={19} />
+          <small>{label}</small>
+          <strong>{n}</strong>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 export function Workspace({
-  library: l,
-  area,
+  area: section,
   id,
   attempt,
-  detail,
-  tab,
+  attemptRow,
+  detail = {},
+  record,
 }: Props) {
+  const parts: Exclude<keyof Library, "profile">[] =
+    section === "settings" ? [] : ["subjects"];
+  if (section === "subjects" && !id) parts.push("materials", "notes");
+  if (!id && section !== "dashboard" && section !== "settings")
+    parts.push(section);
+  if (section === "quizzes" && id) parts.push("attempts");
+  const l = useLibrary(parts);
   const router = useRouter();
   const [dialog, setDialog] = useState<DialogSpec | null>(null);
   const [pending, setPending] = useState(false);
-  const section = area as keyof typeof names;
-  const subject = l.subjects.find((x) => x.id === id),
-    material = l.materials.find((x) => x.id === id),
-    note = l.notes.find((x) => x.id === id),
-    review = l.reviewers.find((x) => x.id === id),
-    quiz = l.quizzes.find((x) => x.id === id);
+  const subject = record?.kind === "subjects" ? record.row : undefined;
+  const material = record?.kind === "materials" ? record.row : undefined;
+  const note = record?.kind === "notes" ? record.row : undefined;
+  const review = record?.kind === "reviewers" ? record.row : undefined;
+  const quiz = record?.kind === "quizzes" ? record.row : undefined;
   const title =
     subject?.name ??
     material?.filename ??
@@ -146,7 +288,7 @@ export function Workspace({
     );
   }
   return (
-    <>
+    <div className="workspace-page" data-section={section}>
       {section === "dashboard" ? (
         <>
           <section className="welcome">
@@ -162,22 +304,21 @@ export function Workspace({
             </div>
             {l.subjects.length > 0 && create("subjects")}
           </section>
-          <div className="stats">
-            {(
-              [
-                [BookOpen, "Subjects", l.subjects.length, "subjects"],
-                [FileText, "Materials", l.materials.length, "materials"],
-                [NotebookPen, "Notes", l.notes.length, "notes"],
-                [ListChecks, "Quizzes taken", l.attempts.length, "quizzes"],
-              ] as const
-            ).map(([Icon, label, n, k]) => (
-              <Link href={"/dashboard/" + k} key={k}>
-                <Icon size={19} />
-                <small>{label}</small>
-                <strong>{n}</strong>
-              </Link>
-            ))}
-          </div>
+          <Suspense
+            fallback={
+              <div
+                className="stats"
+                role="status"
+                aria-label="Loading statistics"
+              >
+                {[0, 1, 2, 3].map((i) => (
+                  <div className="skeleton-stat" key={i} />
+                ))}
+              </div>
+            }
+          >
+            <DashboardStats />
+          </Suspense>
           <section>
             <div className="row between">
               <h2>My subjects</h2>
@@ -186,7 +327,9 @@ export function Workspace({
               </Link>
             </div>
             {l.subjects.length ? (
-              <SubjectCards subjects={l.subjects.slice(0, 6)} library={l} />
+              <Suspense fallback={<WorkspaceSkeleton area="subjects" />}>
+                <DashboardSubjects />
+              </Suspense>
             ) : (
               <Empty title="Create your first subject">
                 <p>
@@ -203,7 +346,9 @@ export function Workspace({
               {quick()}
             </section>
           )}
-          <Activity library={l} />
+          <Suspense fallback={<WorkspaceSkeleton area="notes" />}>
+            <WorkspaceActivity />
+          </Suspense>
         </>
       ) : section === "settings" ? (
         <AccountSettings profile={l.profile} />
@@ -252,35 +397,7 @@ export function Workspace({
             <>
               {subject.code && <small>{subject.code}</small>}
               {subject.description && <p>{subject.description}</p>}
-              <nav className="tabs" aria-label="Subject sections">
-                {["overview", "materials", "notes", "reviewers", "quizzes"].map(
-                  (t) => (
-                    <Link
-                      key={t}
-                      aria-current={t === tab ? "page" : undefined}
-                      href={"/dashboard/subjects/" + id + "?tab=" + t}
-                    >
-                      {t}
-                    </Link>
-                  ),
-                )}
-              </nav>
-              {["materials", "notes", "reviewers", "quizzes"].includes(tab) ? (
-                <>
-                  {create(tab as Category, id)}
-                  <Collection
-                    key={tab}
-                    kind={tab as Category}
-                    library={l}
-                    subject={id}
-                  />
-                </>
-              ) : (
-                <>
-                  {quick(id)}
-                  <Activity library={l} subject={id} />
-                </>
-              )}
+              <SubjectContent id={id} create={create} quick={quick} />
             </>
           )}
           {material && (
@@ -486,19 +603,17 @@ export function Workspace({
               quiz={quiz}
               questions={detail.questions ?? []}
               history={l.attempts.filter((a) => a.quiz_id === id)}
-              attempt={l.attempts.find((a) => a.id === attempt)}
+              attempt={attemptRow}
               answers={detail.answers}
             />
           )}
         </>
       )}
       {dialog && (
-        <WorkspaceForm
-          spec={dialog}
-          library={l}
-          onClose={() => setDialog(null)}
-        />
+        <Suspense fallback={<WorkspaceSkeleton area={section} />}>
+          <FormWithLibrary dialog={dialog} close={() => setDialog(null)} />
+        </Suspense>
       )}
-    </>
+    </div>
   );
 }

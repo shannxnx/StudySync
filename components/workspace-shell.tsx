@@ -1,6 +1,13 @@
 "use client";
-import Link from "next/link";
-import { useState, type ReactNode } from "react";
+import Link from "./workspace-link";
+import {
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useSelectedLayoutSegment, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
@@ -24,7 +31,8 @@ import { message } from "./request";
 import { Modal } from "./forms";
 import { entries, names, icons, type Category } from "./collections";
 import { useThemePreference, setThemePreference } from "./theme-preference";
-import type { Library } from "@/lib/study";
+import { useLibrary } from "./workspace-library";
+import { WorkspaceSkeleton } from "./workspace-skeleton";
 const nav = {
   dashboard: LayoutDashboard,
   subjects: BookOpen,
@@ -34,14 +42,50 @@ const nav = {
   quizzes: ListChecks,
   settings: Settings,
 };
-export function WorkspaceShell({
-  library: l,
-  children,
+function SearchResults({
+  search,
+  close,
 }: {
-  library: Library;
-  children: ReactNode;
+  search: string;
+  close: () => void;
 }) {
+  const library = useLibrary();
+  const index = useMemo(
+    () =>
+      (Object.keys(icons) as Category[]).flatMap((kind) =>
+        entries(library, kind).map((row) => ({
+          ...row,
+          kind,
+          terms: (row.title + " " + row.description).toLowerCase(),
+        })),
+      ),
+    [library],
+  );
+  const term = search.trim().toLowerCase();
+  const rows = index.filter((row) => row.terms.includes(term)).slice(0, 30);
+  return (
+    <div className="search-results">
+      {rows.map((row) => (
+        <Link
+          className="list-row"
+          key={row.id}
+          onNavigate={close}
+          href={"/dashboard/" + row.kind + "/" + row.id}
+        >
+          <strong>{row.title}</strong>
+          <small>{names[row.kind]}</small>
+        </Link>
+      ))}
+      {!rows.length && <p>No matching items.</p>}
+    </div>
+  );
+}
+
+export function WorkspaceShell({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const { profile } = useLibrary([]);
+  const menu = useRef<HTMLButtonElement>(null);
+  const sidebar = useRef<HTMLElement>(null);
   const segment = useSelectedLayoutSegment();
   const section = (segment?.split("/")[0] || "dashboard") as keyof typeof nav;
   const [collapsed, setCollapsed] = useState(false);
@@ -65,17 +109,40 @@ export function WorkspaceShell({
       toast.error(message(e));
     }
   }
-  const searchRows =
-    search === null
-      ? []
-      : (Object.keys(icons) as Category[])
-          .flatMap((k) => entries(l, k).map((r) => ({ ...r, kind: k })))
-          .filter((r) =>
-            (r.title + " " + r.description)
-              .toLowerCase()
-              .includes(search.toLowerCase()),
-          )
-          .slice(0, 30);
+  useEffect(() => {
+    if (!mobile) return;
+    const drawer = sidebar.current!;
+    drawer.querySelector<HTMLElement>('a[aria-current="page"]')?.focus();
+    const desktop = matchMedia("(min-width: 801px)");
+    const resize = () => {
+      if (desktop.matches) setMobile(false);
+    };
+    function keydown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMobile(false);
+        menu.current?.focus();
+      }
+      if (event.key !== "Tab") return;
+      const links = drawer.querySelectorAll<HTMLElement>(
+        "a[href], button:not(:disabled)",
+      );
+      const first = links[0],
+        last = links[links.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", keydown);
+    desktop.addEventListener("change", resize);
+    return () => {
+      document.removeEventListener("keydown", keydown);
+      desktop.removeEventListener("change", resize);
+    };
+  }, [mobile]);
   return (
     <div
       className={
@@ -91,7 +158,7 @@ export function WorkspaceShell({
           onClick={() => setMobile(false)}
         />
       )}
-      <aside>
+      <aside ref={sidebar} id="workspace-sidebar">
         <Brand />
         <nav aria-label="Workspace navigation">
           {(Object.keys(nav) as (keyof typeof nav)[]).map((k) => {
@@ -99,6 +166,7 @@ export function WorkspaceShell({
             return (
               <Link
                 title={names[k]}
+                prefetch={true}
                 key={k}
                 aria-current={section === k ? "page" : undefined}
                 href={k === "dashboard" ? "/dashboard" : "/dashboard/" + k}
@@ -117,11 +185,9 @@ export function WorkspaceShell({
             onClick={() => setMobile(false)}
           >
             <i>
-              {(l.profile.full_name || l.profile.email)
-                .slice(0, 1)
-                .toUpperCase()}
+              {(profile.full_name || profile.email).slice(0, 1).toUpperCase()}
             </i>
-            <span>{l.profile.full_name || l.profile.email}</span>
+            <span>{profile.full_name || profile.email}</span>
           </Link>
           <button className="nav-action" onClick={signOut}>
             <LogOut size={17} />
@@ -141,6 +207,9 @@ export function WorkspaceShell({
             </button>
             <button
               className="icon-btn mobile-menu"
+              ref={menu}
+              aria-expanded={mobile}
+              aria-controls="workspace-sidebar"
               aria-label="Open navigation"
               onClick={() => setMobile(true)}
             >
@@ -170,11 +239,15 @@ export function WorkspaceShell({
               className="avatar"
               aria-label="Account settings"
             >
-              {(l.profile.full_name || l.profile.email)[0]?.toUpperCase()}
+              {(profile.full_name || profile.email)[0]?.toUpperCase()}
             </Link>
           </div>
         </header>
-        <main className="content">{children}</main>
+        <main className="content" id="workspace-content">
+          <Suspense fallback={<WorkspaceSkeleton area={section} />}>
+            {children}
+          </Suspense>
+        </main>
       </div>
       {search !== null && (
         <Modal title="Search workspace" onClose={() => setSearch(null)}>
@@ -185,20 +258,9 @@ export function WorkspaceShell({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <div className="search-results">
-            {searchRows.map((r) => (
-              <Link
-                className="list-row"
-                key={r.id}
-                onClick={() => setSearch(null)}
-                href={"/dashboard/" + r.kind + "/" + r.id}
-              >
-                <strong>{r.title}</strong>
-                <small>{names[r.kind]}</small>
-              </Link>
-            ))}
-            {!searchRows.length && <p>No matching items.</p>}
-          </div>
+          <Suspense fallback={<WorkspaceSkeleton area="notes" />}>
+            <SearchResults search={search} close={() => setSearch(null)} />
+          </Suspense>
         </Modal>
       )}
     </div>

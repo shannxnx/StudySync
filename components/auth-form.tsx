@@ -1,171 +1,125 @@
 "use client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
+import { useState, type FormEvent } from "react";
+import { ArrowRight, Eye, EyeOff } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Brand } from "@/components/brand";
-import { Button } from "@/components/ui/button";
+import { AuthLayout } from "./auth-layout";
+import { rememberConfirmation } from "./confirmation-state";
+import { Button } from "./ui/button";
 
 const copy = {
-  login: ["Welcome back", "Sign in to your study workspace.", "Sign in"],
-  register: [
-    "Create your account",
-    "Start organizing your courses in StudySync.",
-    "Create account",
-  ],
-  recovery: [
-    "Reset your password",
-    "Enter your account email to request a reset link.",
-    "Send reset link",
-  ],
-  update: [
-    "Choose a new password",
-    "Use at least eight characters.",
-    "Save password",
-  ],
+  login: ["Welcome back", "Sign in to your StudySync workspace.", "Sign in"],
+  register: ["Create your account", "Use your email and a password. We’ll email you to confirm your address.", "Create account"],
+  recovery: ["Reset your password", "We’ll email you a link to choose a new password.", "Send reset link"],
+  update: ["Choose a new password", "Your new password will be ready to use the next time you sign in.", "Save password"],
 } as const;
-type Mode = keyof typeof copy;
-type Fields = { name: string; email: string; password: string };
-export function AuthForm({ mode }: { mode: Mode }) {
+
+export function AuthForm({ mode }: { mode: keyof typeof copy }) {
   const router = useRouter();
-  const {
-    register,
-    handleSubmit,
-    formState: { isSubmitting },
-  } = useForm<Fields>();
-  const [message, setMessage] = useState("");
+  const [visible, setVisible] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [title, description, button] = copy[mode];
-  async function submit(values: Fields) {
-    setMessage("");
+  const [title, description, action] = copy[mode];
+  const newPassword = mode === "register" || mode === "update";
+  const titleId = mode + "-title";
+  const emailId = mode + "-email";
+  const passwordId = mode + "-password";
+  const tipId = mode + "-password-tip";
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    const fields = new FormData(event.currentTarget);
+    const email = String(fields.get("email") || "").trim();
+    const password = String(fields.get("password") || "");
+    setBusy(true);
     setError("");
-    const email = values.email?.trim();
-    if (mode !== "update" && !z.email().safeParse(email).success) {
-      setError("Enter a valid email address.");
-      return;
-    }
-    if (mode === "register" && !values.name.trim()) {
-      setError("Enter your full name.");
-      return;
-    }
-    const auth = createClient().auth;
-    const callback = window.location.origin + "/auth/callback";
+    setNotice("");
     try {
+      const auth = createClient().auth;
+      const callback = window.location.origin + "/auth/callback";
       if (mode === "register") {
-        const { data, error } = await auth.signUp({
-          email,
-          password: values.password,
-          options: {
-            data: { full_name: values.name.trim() },
-            emailRedirectTo: callback,
-          },
-        });
+        const { data, error } = await auth.signUp({ email, password, options: { emailRedirectTo: callback } });
         if (error) throw error;
         if (!data.session) {
-          setMessage(
-            "Check your inbox for the confirmation link, then sign in.",
-          );
+          rememberConfirmation(email, true);
+          router.push("/verify-email");
           return;
         }
+      } else if (mode === "login") {
+        const { error } = await auth.signInWithPassword({ email, password });
+        if (error?.code === "invalid_credentials") {
+          setError("Incorrect email or password. Check both and try again.");
+          return;
+        }
+        if (error?.code === "email_not_confirmed") {
+          rememberConfirmation(email, false);
+          router.push("/verify-email");
+          return;
+        }
+        if (error) throw error;
       } else if (mode === "recovery") {
-        const { error } = await auth.resetPasswordForEmail(email, {
-          redirectTo: callback + "?flow=recovery",
-        });
+        const { error } = await auth.resetPasswordForEmail(email, { redirectTo: callback + "?flow=recovery" });
         if (error) throw error;
-        setMessage(
-          "If an account exists, a reset link is on its way. Open it in this browser.",
-        );
+        setNotice("If an account exists for that email, a reset link is on its way. Open the link in this browser.");
         return;
-      } else if (mode === "update") {
-        const { error } = await auth.updateUser({ password: values.password });
-        if (error) throw error;
       } else {
-        const { error } = await auth.signInWithPassword({
-          email,
-          password: values.password,
-        });
+        const { error } = await auth.updateUser({ password });
         if (error) throw error;
       }
       router.replace("/dashboard");
       router.refresh();
     } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Unable to reach authentication. Please try again.",
-      );
+      setError(reason instanceof Error ? reason.message : "We couldn’t connect. Please try again.");
+    } finally {
+      setBusy(false);
     }
   }
+
   return (
-    <main className="auth-page">
-      <Brand />
-      <section className="auth-card">
-        <h1>{title}</h1>
-        <p>{description}</p>
-        <form onSubmit={handleSubmit(submit)}>
-          {mode === "register" && (
-            <label>
-              Full name
-              <input
-                {...register("name")}
-                autoComplete="name"
-                maxLength={100}
-                required
-              />
-            </label>
-          )}
-          {mode !== "update" && (
-            <label>
-              Email
-              <input
-                type="email"
-                {...register("email")}
-                autoComplete="email"
-                required
-                maxLength={254}
-              />
-            </label>
-          )}
-          {mode !== "recovery" && (
-            <label>
-              Password
-              <input
-                type="password"
-                {...register("password")}
-                autoComplete={
-                  mode === "login" ? "current-password" : "new-password"
-                }
-                required
-                minLength={mode === "login" ? 1 : 8}
-                maxLength={256}
-              />
-            </label>
-          )}
-          {error && (
-            <p role="alert" className="error">
-              {error}
-            </p>
-          )}
-          {message && (
-            <p role="status" className="notice">
-              {message}
-            </p>
-          )}
-          <Button disabled={isSubmitting}>
-            {isSubmitting ? "Please wait…" : button}
-          </Button>
-        </form>
-        {mode === "login" ? (
-          <div className="auth-links">
-            <Link href="/forgot-password">Forgot password?</Link>
-            <Link href="/register">Create an account</Link>
+    <AuthLayout titleId={titleId}>
+      <h1 id={titleId}>{title}</h1>
+      <p className="account-intro">{description}</p>
+      <form className="account-form" onSubmit={submit}>
+        {mode !== "update" && (
+          <div className="account-field">
+            <label htmlFor={emailId}>Email</label>
+            <input id={emailId} name="email" type="email" autoComplete="email" autoCapitalize="none"
+              spellCheck={false} required maxLength={254} placeholder="you@example.com" />
           </div>
-        ) : (
-          <Link href="/login">Back to sign in</Link>
         )}
-      </section>
-    </main>
+        {mode !== "recovery" && (
+          <div className="account-field">
+            <div className="account-label">
+              <label htmlFor={passwordId}>Password</label>
+              {mode === "login" && <Link className="account-link" href="/forgot-password">Forgot password?</Link>}
+            </div>
+            <div className="account-password">
+              <input id={passwordId} name="password" type={visible ? "text" : "password"}
+                autoComplete={newPassword ? "new-password" : "current-password"} required
+                minLength={newPassword ? 8 : 1} maxLength={256} aria-describedby={newPassword ? tipId : undefined} />
+              <button className="account-eye" type="button" aria-label={visible ? "Hide password" : "Show password"}
+                aria-controls={passwordId} onClick={() => setVisible(!visible)}>
+                {visible ? <EyeOff size={19} aria-hidden /> : <Eye size={19} aria-hidden />}
+              </button>
+            </div>
+            {newPassword && <p className="account-help" id={tipId}>Use at least 8 characters.</p>}
+          </div>
+        )}
+        {error && <p role="alert" className="error account-feedback">{error}</p>}
+        {notice && <p role="status" className="notice account-feedback">{notice}</p>}
+        <Button className="account-action" disabled={busy}>{busy ? "Please wait…" : action}<ArrowRight size={17} aria-hidden /></Button>
+      </form>
+      <div className="account-footer">
+        {mode === "login" ? (
+          <p>New to StudySync? <Link className="account-link" href="/register">Create an account</Link></p>
+        ) : (
+          <p>{mode === "register" && "Already have an account? "}<Link className="account-link" href="/login">{mode === "register" ? "Sign in" : "Back to sign in"}</Link></p>
+        )}
+        {mode === "register" && <Link className="account-link" href="/verify-email">I already have a verification code</Link>}
+      </div>
+    </AuthLayout>
   );
 }

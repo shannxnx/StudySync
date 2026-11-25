@@ -1,6 +1,35 @@
 import { test, expect } from "@playwright/test";
 import { office, pdf } from "../doc-fixtures";
 
+for (const theme of ["light", "dark"] as const) {
+  test(`incorrect login is readable in ${theme} mode`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: theme });
+    await page.route("**/auth/v1/token**", (route) => route.fulfill({
+      status: 400,
+      json: { error_code: "invalid_credentials", msg: "Invalid login credentials" },
+    }));
+    await page.goto("/login");
+    await page.getByLabel("Email", { exact: true }).fill("student@example.invalid");
+    await page.getByLabel("Password", { exact: true }).fill("incorrect-test-password");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    const alert = page.locator("form").getByRole("alert");
+    await expect(alert).toHaveText("Incorrect email or password. Check both and try again.");
+    const contrast = await alert.evaluate((element) => {
+      function luminance(rgb: string) {
+        const [r, g, b] = rgb.match(/[\d.]+/g)!.slice(0, 3).map((value) => {
+          const channel = Number(value) / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+      const style = getComputedStyle(element);
+      const ink = luminance(style.color), surface = luminance(style.backgroundColor);
+      return (Math.max(ink, surface) + 0.05) / (Math.min(ink, surface) + 0.05);
+    });
+    expect(contrast).toBeGreaterThanOrEqual(4.5);
+  });
+}
+
 test("public pages, email forms, and signed-out route protection", async ({
   page,
   request,
@@ -26,15 +55,48 @@ test("public pages, email forms, and signed-out route protection", async ({
       },
     }),
   );
-  await page.getByLabel("Full name").fill("Test Student");
+  await expect(page.getByRole("textbox", { name: /name/i })).toHaveCount(0);
   await page.getByLabel("Email", { exact: true }).fill("test@example.invalid");
   await page
     .getByLabel("Password", { exact: true })
     .fill("study-testing-password");
+  await page.getByRole("button", { name: "Show password" }).click();
+  await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute("type", "text");
+  await page.getByRole("button", { name: "Hide password" }).click();
+  await expect(page.getByLabel("Password", { exact: true })).toHaveValue("study-testing-password");
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "Check your inbox" }),
-  ).toBeVisible();
+  await expect(page).toHaveURL(/\/verify-email$/);
+  await page.reload();
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue("test@example.invalid");
+  await expect(page.getByRole("button", { name: /Resend in/ })).toBeDisabled();
+  await page.route("**/auth/v1/verify**", (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({
+      type: "email", email: "test@example.invalid", token: "01234567",
+    });
+    return route.fulfill({ status: 403, json: { error_code: "otp_expired", msg: "Token has expired or is invalid" } });
+  });
+  await page.getByLabel("Verification code").fill("0123 4567");
+  await page.getByRole("button", { name: "Verify email" }).click();
+  await expect(page.locator("form").getByRole("alert")).toContainText("incorrect or has expired");
+  await page.getByLabel("Email", { exact: true }).fill("other@example.invalid");
+  await page.route("**/auth/v1/resend**", (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ type: "signup", email: "other@example.invalid" });
+    return route.fulfill({ json: {} });
+  });
+  await page.getByRole("button", { name: "Resend email" }).click();
+  await expect(page.getByRole("status")).toContainText("new email");
+  await expect(page.getByLabel("Verification code")).toHaveValue("");
+  await page.goto("/login");
+  await page.route("**/auth/v1/token**", (route) =>
+    route.fulfill({ status: 400, json: { error_code: "email_not_confirmed", msg: "Email not confirmed" } }),
+  );
+  await page.getByLabel("Email", { exact: true }).fill("pending@example.invalid");
+  await page.getByLabel("Password", { exact: true }).fill("study-testing-password");
+  await page.getByRole("button", { name: "Show password" }).click();
+  await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute("type", "text");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/\/verify-email$/);
+  await expect(page.getByRole("textbox", { name: "Email", exact: true })).toHaveValue("pending@example.invalid");
   await page.goto("/forgot-password");
   await page.route("**/auth/v1/recover**", (r) => r.fulfill({ json: {} }));
   await page.getByLabel("Email", { exact: true }).fill("test@example.invalid");
